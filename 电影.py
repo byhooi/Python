@@ -1,17 +1,24 @@
 def main():
-    # 设置默认保存目录，可以根据需要修改
+    # 设置默认保存目录
     default_save_dir = r"D:\Downloads\Playlists"
     
+    # 确保目录存在
+    import os
+    os.makedirs(default_save_dir, exist_ok=True)
+    
     while True:  # 外层循环
-        # 获取保存目录
-        save_dir = input(f"请输入保存目录（直接回车使用默认目录 {default_save_dir}）: ").strip()
-        if not save_dir:
-            save_dir = default_save_dir
+        print("请输入视频链接，格式为 '标题 https://链接' 或 '标题$https://链接'，直接回车结束。")
+        videos = []
+        while True:
+            input_str = input()
+            if input_str == '':
+                break
+            videos.append(input_str)
         
-        # 确保目录存在
-        import os
-        os.makedirs(save_dir, exist_ok=True)
-        
+        if not videos:  # 如果没有输入视频链接，继续下一轮循环
+            print("未输入任何视频链接！")
+            continue
+            
         # 获取播放列表名称
         playlist_name = input("请输入播放列表的名称（不需要扩展名），输入 'q' 退出程序: ").strip()
         if playlist_name.lower() == 'q':  # 检查是否要退出程序
@@ -21,15 +28,7 @@ def main():
         playlist_name += ".m3u8"
         
         # 构建完整的文件路径
-        full_path = os.path.join(save_dir, playlist_name)
-
-        print("请输入视频链接，格式为 '标题 https://链接' 或 '标题$https://链接'，直接回车结束。")
-        videos = []
-        while True:
-            input_str = input()
-            if input_str == '':
-                break
-            videos.append(input_str)
+        full_path = os.path.join(default_save_dir, playlist_name)
 
         # 创建m3u8文件
         with open(full_path, 'w', encoding='utf-8') as f:
