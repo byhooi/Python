@@ -23,7 +23,7 @@ def main():
                 break
             videos.append(input_str)
         
-        if not videos:  # 如果没有输入视频链接，继续下一轮循环
+        if not videos:  # 如果没有输入视频链接，继续下一轮
             print("未输入任何视频链接！")
             continue
             
