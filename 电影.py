@@ -1,5 +1,17 @@
 def main():
+    # 设置默认保存目录，可以根据需要修改
+    default_save_dir = r"D:\Downloads\Playlists"
+    
     while True:  # 外层循环
+        # 获取保存目录
+        save_dir = input(f"请输入保存目录（直接回车使用默认目录 {default_save_dir}）: ").strip()
+        if not save_dir:
+            save_dir = default_save_dir
+        
+        # 确保目录存在
+        import os
+        os.makedirs(save_dir, exist_ok=True)
+        
         # 获取播放列表名称
         playlist_name = input("请输入播放列表的名称（不需要扩展名），输入 'q' 退出程序: ").strip()
         if playlist_name.lower() == 'q':  # 检查是否要退出程序
@@ -7,6 +19,9 @@ def main():
         if not playlist_name:
             playlist_name = "playlist"
         playlist_name += ".m3u8"
+        
+        # 构建完整的文件路径
+        full_path = os.path.join(save_dir, playlist_name)
 
         print("请输入视频链接，格式为 '标题 https://链接' 或 '标题$https://链接'，直接回车结束。")
         videos = []
@@ -17,7 +32,7 @@ def main():
             videos.append(input_str)
 
         # 创建m3u8文件
-        with open(playlist_name, 'w', encoding='utf-8') as f:
+        with open(full_path, 'w', encoding='utf-8') as f:
             f.write('#EXTM3U\n\n')
             for video in videos:
                 try:
@@ -33,7 +48,7 @@ def main():
                 except ValueError as e:
                     print(f"输入格式错误，跳过此项：{video}，错误信息：{e}")
 
-        print(f"播放列表已创建为 '{playlist_name}'")
+        print(f"播放列表已创建为 '{full_path}'")
         print("\n" + "="*50 + "\n")
 
 if __name__ == "__main__":
