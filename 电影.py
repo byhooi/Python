@@ -7,6 +7,14 @@ def main():
     os.makedirs(default_save_dir, exist_ok=True)
     
     while True:  # 外层循环
+        # 获取播放列表名称
+        playlist_name = input("请输入播放列表的名称（不需要扩展名），输入 'q' 退出程序: ").strip()
+        if playlist_name.lower() == 'q':  # 检查是否要退出程序
+            break
+        if not playlist_name:
+            playlist_name = "playlist"
+        playlist_name += ".m3u8"
+        
         print("请输入视频链接，格式为 '标题 https://链接' 或 '标题$https://链接'，直接回车结束。")
         videos = []
         while True:
@@ -19,14 +27,6 @@ def main():
             print("未输入任何视频链接！")
             continue
             
-        # 获取播放列表名称
-        playlist_name = input("请输入播放列表的名称（不需要扩展名），输入 'q' 退出程序: ").strip()
-        if playlist_name.lower() == 'q':  # 检查是否要退出程序
-            break
-        if not playlist_name:
-            playlist_name = "playlist"
-        playlist_name += ".m3u8"
-        
         # 构建完整的文件路径
         full_path = os.path.join(default_save_dir, playlist_name)
 
