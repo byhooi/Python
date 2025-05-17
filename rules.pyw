@@ -7,11 +7,11 @@ from tkinter import Tk, filedialog
 def select_input_file():
     root = Tk()
     root.withdraw()
-    file_path = filedialog.askopenfilename(
+    file_paths = filedialog.askopenfilenames(
         title="选择规则文件（txt）",
         filetypes=[("Text files", "*.txt")]
     )
-    return file_path
+    return file_paths
 
 # 读取规则
 def load_rules(file_path):
@@ -58,32 +58,38 @@ def save_surge_list(comments, rules, output_path):
 
 # 主程序入口
 def main():
-    input_file = select_input_file()
-    if not input_file:
+    input_files = select_input_file()
+    if not input_files:
         ctypes.windll.user32.MessageBoxW(0, "未选择文件，程序已取消。", "提示", 0)
         return
 
-    # 取文件名用于输出命名
-    input_name = os.path.splitext(os.path.basename(input_file))[0]
-
-    # 输出路径
     output_dir = r'D:\Github\Surge\Rule'
     os.makedirs(output_dir, exist_ok=True)
-    clash_file = os.path.join(output_dir, f'clash_rules_{input_name}.yaml')
-    surge_file = os.path.join(output_dir, f'surge_rules_{input_name}.list')
+    
+    success_files = []
+    for input_file in input_files:
+        try:
+            # 取文件名用于输出命名
+            input_name = os.path.splitext(os.path.basename(input_file))[0]
+            
+            clash_file = os.path.join(output_dir, f'clash_rules_{input_name}.yaml')
+            surge_file = os.path.join(output_dir, f'surge_rules_{input_name}.list')
 
-    try:
-        comments, rules = load_rules(input_file)
-        updated_comments = update_metadata(comments, len(rules))
+            comments, rules = load_rules(input_file)
+            updated_comments = update_metadata(comments, len(rules))
 
-        save_clash_yaml(updated_comments, rules, clash_file)
-        save_surge_list(updated_comments, rules, surge_file)
+            save_clash_yaml(updated_comments, rules, clash_file)
+            save_surge_list(updated_comments, rules, surge_file)
+            
+            success_files.append(f"\n{input_name}:\nClash: {clash_file}\nSurge: {surge_file}")
 
-        message = f"转换完成！\n\nClash:\n{clash_file}\n\nSurge:\n{surge_file}"
+        except Exception as e:
+            ctypes.windll.user32.MessageBoxW(0, f"处理文件 {input_file} 时发生错误: {str(e)}", "错误", 0)
+            continue
+
+    if success_files:
+        message = "转换完成！" + "\n".join(success_files)
         ctypes.windll.user32.MessageBoxW(0, message, "成功", 0)
-
-    except Exception as e:
-        ctypes.windll.user32.MessageBoxW(0, f"发生错误: {str(e)}", "错误", 0)
 
 if __name__ == '__main__':
     main()
