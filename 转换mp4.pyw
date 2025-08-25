@@ -60,33 +60,48 @@ def run_ffmpeg_command(command):
     try:
         # 启动FFmpeg进程
         process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, 
-                                 stderr=subprocess.STDOUT, universal_newlines=True, 
+                                 stderr=subprocess.STDOUT, universal_newlines=False, 
                                  creationflags=subprocess.CREATE_NO_WINDOW)
+        
+        # 存储所有输出用于错误诊断
+        all_output = []
         
         # 监控输出以获取进度
         total_duration = None
         while True:
             output = process.stdout.readline()
-            if output == '' and process.poll() is not None:
+            if output == b'' and process.poll() is not None:
                 break
             if output:
-                # 解析输出获取进度信息
-                if 'Duration:' in output:
-                    match = re.search(r'Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})', output)
-                    if match:
-                        h, m, s = match.groups()
-                        total_duration = int(h) * 3600 + int(m) * 60 + float(s)
-                
-                # 获取当前时间
-                if 'time=' in output and total_duration:
-                    match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d{2})', output)
-                    if match:
-                        h, m, s = match.groups()
-                        current_time = int(h) * 3600 + int(m) * 60 + float(s)
-                        progress = (current_time / total_duration) * 100
-                        progress_var.set(progress)
-                        progress_label.config(text=f"转换进度: {progress:.1f}%")
-                        root.update_idletasks()
+                try:
+                    # 尝试用UTF-8解码，失败则用GBK
+                    try:
+                        output_str = output.decode('utf-8')
+                    except UnicodeDecodeError:
+                        output_str = output.decode('gbk', errors='ignore')
+                    
+                    all_output.append(output_str)
+                    
+                    # 解析输出获取进度信息
+                    if 'Duration:' in output_str:
+                        match = re.search(r'Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})', output_str)
+                        if match:
+                            h, m, s = match.groups()
+                            total_duration = int(h) * 3600 + int(m) * 60 + float(s)
+                    
+                    # 获取当前时间
+                    if 'time=' in output_str and total_duration:
+                        match = re.search(r'time=(\d{2}):(\d{2}):(\d{2}\.\d{2})', output_str)
+                        if match:
+                            h, m, s = match.groups()
+                            current_time = int(h) * 3600 + int(m) * 60 + float(s)
+                            progress = (current_time / total_duration) * 100
+                            progress_var.set(progress)
+                            progress_label.config(text=f"转换进度: {progress:.1f}%")
+                            root.update_idletasks()
+                except:
+                    # 如果解码失败，跳过这一行
+                    pass
         
         # 等待进程完成
         return_code = process.wait()
@@ -96,7 +111,21 @@ def run_ffmpeg_command(command):
             messagebox.showinfo("成功", f"转换完成，已保存为 {target_file_path.get()}")
         else:
             progress_label.config(text="转换失败")
-            messagebox.showerror("错误", f"转换失败，错误代码: {return_code}")
+            # 保存错误输出到文件
+            error_log_path = Path(target_file_path.get()).parent / "ffmpeg_error.log"
+            with open(error_log_path, 'w', encoding='utf-8') as f:
+                f.write(f"FFmpeg命令: {command}\n")
+                f.write(f"返回码: {return_code}\n")
+                f.write(f"错误输出:\n")
+                f.write(''.join(all_output))
+            
+            # 解析Windows错误码
+            if return_code == 3199971767:
+                error_msg = "Windows系统错误 (0xBEDEAD37): 可能是文件权限问题或文件损坏"
+            else:
+                error_msg = f"错误代码: {return_code}"
+            
+            messagebox.showerror("错误", f"转换失败，{error_msg}\n详细错误信息已保存到: {error_log_path}")
             
     except FileNotFoundError:
         progress_label.config(text="FFmpeg未找到")
@@ -108,6 +137,25 @@ def run_ffmpeg_command(command):
         convert_button.config(state="normal")
         cancel_button.config(state="disabled")
         progress_var.set(0)
+
+def check_file_integrity(file_path: str) -> bool:
+    """检查文件完整性和权限"""
+    try:
+        path = Path(file_path)
+        if not path.exists():
+            return False
+        
+        # 检查文件大小
+        if path.stat().st_size == 0:
+            return False
+            
+        # 检查文件权限
+        if not os.access(file_path, os.R_OK):
+            return False
+            
+        return True
+    except:
+        return False
 
 def convert_video():
     """执行视频转换"""
@@ -127,6 +175,11 @@ def convert_video():
     if not Path(source_file_path.get()).exists():
         messagebox.showerror("错误", "源文件不存在")
         return
+        
+    # 检查源文件完整性
+    if not check_file_integrity(source_file_path.get()):
+        messagebox.showerror("错误", "源文件可能损坏或无法访问")
+        return
 
     # 获取转换参数
     quality = quality_var.get()
@@ -139,7 +192,14 @@ def convert_video():
     
     # 构建FFmpeg命令
     target_path = target_file_path.get()
-    ffmpeg_command = f'ffmpeg -i "{source_file_path.get()}" -c:v libx264 -tag:v avc1 -movflags faststart -crf {crf} -preset {preset} "{target_path}"'
+    source_path = source_file_path.get()
+    
+    # 针对MOV文件的优化处理
+    if source_path.lower().endswith('.mov'):
+        # MOV文件可能需要特殊处理
+        ffmpeg_command = f'ffmpeg -i "{source_path}" -c:v libx264 -tag:v avc1 -movflags +faststart -pix_fmt yuv420p -crf {crf} -preset {preset} -c:a aac -b:a 128k "{target_path}"'
+    else:
+        ffmpeg_command = f'ffmpeg -i "{source_path}" -c:v libx264 -tag:v avc1 -movflags faststart -crf {crf} -preset {preset} "{target_path}"'
 
     # 禁用转换按钮
     convert_button.config(state="disabled", text="转换中...")
