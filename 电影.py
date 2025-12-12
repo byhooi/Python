@@ -91,7 +91,7 @@ def collect_videos() -> List[Tuple[str, str]]:
 
 def main():
     """主函数"""
-    default_save_dir = Path(r"D:\movie")
+    default_save_dir = Path(r"D:\Videos")
     
     try:
         default_save_dir.mkdir(parents=True, exist_ok=True)
