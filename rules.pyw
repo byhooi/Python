@@ -131,7 +131,7 @@ def main() -> None:
         return
     
     # 创建输出目录
-    output_dir = Path(r'D:\Github\Surge\Rule')
+    output_dir = Path(r'D:\Documents\Github\Surge\Rule')
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except PermissionError:
