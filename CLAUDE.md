@@ -12,10 +12,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **mp4提取音频.pyw**: MP4到MP3音频提取器,使用Tkinter GUI和FFmpeg
 - **转换mp4.pyw**: 通用视频格式转换器,支持多种视频格式到MP4转换
 - **合并PDF.pyw**: 图片到PDF转换器,支持拖拽排序、图片预览
-- **rules.pyw**: Clash和Surge网络规则文件格式转换器
+- **cmb_url_parser.pyw**: URL参数解析工具,递归解码URL提取OpenId和UnionId参数
+- **backup/rules.pyw**: Clash和Surge网络规则文件格式转换器
 
 ### 命令行工具 (`.py`文件)
-- **电影.py**: M3U8播放列表生成器,输出到`D:\movie`目录
+- **电影.py**: M3U8播放列表生成器,输出到`D:\Videos`目录,支持空格或`$`分隔的标题+链接格式
 - **FinalShell.py**: FinalShell激活码生成器(版本3.9.6前后)
 - **逆向Mkey.py**: Mkey签名算法逆向工具
 
@@ -41,11 +42,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **线程处理**: 使用`subprocess.Popen`异步执行,实时更新进度
 - **Windows兼容**: 使用`creationflags=subprocess.CREATE_NO_WINDOW`隐藏控制台窗口
 
-### 3. 文件处理模式
+### 文件处理模式
 - **路径处理**: 统一使用`pathlib.Path`
-- **编码处理**: UTF-8优先,GBK回退(`mp4提取音频.pyw`, `rules.pyw`)
+- **编码处理**: UTF-8优先,GBK回退(`mp4提取音频.pyw`)
 - **输入验证**: 文件存在性、权限、完整性检查
-- **默认目录**: `电影.py`默认输出到`D:\movie`, `rules.pyw`输出到`D:\Github\Surge\Rule`
+- **默认目录**:
+  - `电影.py`输出到`D:\Videos`
+  - `backup/rules.pyw`输出到`D:\Github\Surge\Rule`
 
 ## 常用开发模式
 
@@ -60,6 +63,7 @@ python <文件名>.pyw
 python 电影.py
 python FinalShell.py
 python 逆向Mkey.py
+python cmb_url_parser.pyw  # 也可作为GUI应用运行
 ```
 
 ## 关键技术要点
@@ -82,6 +86,12 @@ command = f'ffmpeg -y -i "{input_file}" -c:v libx264 -crf {crf} -preset {preset}
 - URL验证: `电影.py:validate_url()`使用完整的URL正则模式
 - 时间解析: FFmpeg输出解析使用`re.search()`提取时间戳
 
+### URL参数解析 (cmb_url_parser.pyw)
+递归解码多层编码的URL:
+- 使用`urllib.parse.unquote()`递归解码直到无变化
+- 使用`set()`跟踪已访问URL避免循环
+- 支持从多层嵌套URL中提取特定参数(OpenId, UnionId)
+
 ### PDF生成 (合并PDF.pyw)
 使用reportlab库,关键点:
 - 使用`with`语句管理图片内存
@@ -89,10 +99,17 @@ command = f'ffmpeg -y -i "{input_file}" -c:v libx264 -crf {crf} -preset {preset}
 - 支持RGBA/WebP格式自动转RGB
 - 最大尺寸限制4000像素避免内存溢出
 
-### 规则文件处理 (rules.pyw)
+### 规则文件处理 (backup/rules.pyw)
 - 分离文件头部注释和规则内容
 - 自动更新元数据(时间戳、规则数量)
 - 双格式输出: Clash YAML (`payload:`)和Surge LIST
+
+### M3U8播放列表生成 (电影.py)
+命令行交互式工具:
+- 输入格式: `标题 URL` 或 `标题$URL`
+- 使用正则表达式验证URL格式
+- 支持文件名有效性检查(排除Windows非法字符)
+- 循环收集视频直到空行结束
 
 ## 依赖要求
 
