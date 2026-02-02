@@ -11,10 +11,10 @@ VOICE_NAME = "en-US-JennyNeural"
 RATE = "-10%"  # 语速减慢 10%
 
 # 停顿时长配置 (毫秒) - 基于儿童英语教学研究
-PAUSE_AFTER_UNIT = 2000       # 单元名后 2秒
+PAUSE_AFTER_UNIT = 1500       # 单元名后 2秒
 PAUSE_BETWEEN_REPEAT = 1000   # 两遍之间 1.5秒
 PAUSE_AFTER_WORD = 1000       # 跟读时间 5秒
-PAUSE_BETWEEN_UNITS = 2000    # 单元之间 3秒
+PAUSE_BETWEEN_UNITS = 1500   # 单元之间 3秒
 
 # 输出文件名
 OUTPUT_FILE = "Unit_English_Rhythm.mp3"
