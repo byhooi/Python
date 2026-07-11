@@ -1,349 +1,421 @@
-import os
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from pathlib import Path
-from typing import List, Optional
-from PIL import Image, ImageTk
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
+"""将文件夹中的图片按指定顺序合并为 PDF。"""
+
+import re
+import tempfile
 import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+from typing import Callable, List, Optional, Tuple
 
-class DraggableListbox(tk.Listbox):
-    def __init__(self, master, **kw):
-        super().__init__(master, **kw)
-        self.bind('<Button-1>', self.set_current)
-        self.bind('<B1-Motion>', self.shift_selection)
-        self.curIndex = None
-        self.bind('<Double-Button-1>', self.preview_image)
+from PIL import Image, ImageTk
 
-    def set_current(self, event):
-        self.curIndex = self.nearest(event.y)
+try:
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+except ModuleNotFoundError:
+    ImageReader = None
+    canvas = None
 
-    def shift_selection(self, event):
-        i = self.nearest(event.y)
-        if i < self.curIndex:
-            x = self.get(i)
-            self.delete(i)
-            self.insert(i + 1, x)
-            self.curIndex = i
-        elif i > self.curIndex:
-            x = self.get(i)
-            self.delete(i)
-            self.insert(i - 1, x)
-            self.curIndex = i
-    
-    def preview_image(self, event):
-        """双击预览图片"""
-        selection = self.curselection()
-        if selection:
-            file_name = self.get(selection[0])
-            folder = input_entry.get()
-            if folder:
-                preview_image(os.path.join(folder, file_name))
 
-def preview_image(image_path: str) -> None:
-    """预览图片"""
-    try:
-        preview_window = tk.Toplevel(root)
-        preview_window.title(f"预览 - {Path(image_path).name}")
-        preview_window.geometry("600x600")
-        
-        with Image.open(image_path) as img:
-            # 缩放图片以适合预览窗口
-            img.thumbnail((550, 550), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
-            
-        label = tk.Label(preview_window, image=photo)
-        label.image = photo  # 保持引用
-        label.pack(expand=True)
-        
-    except Exception as e:
-        messagebox.showerror("预览错误", f"无法预览图片: {e}")
+SUPPORTED_FORMATS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".gif"}
+MAX_IMAGE_SIZE = 4000
 
-def convert_images_to_pdf(image_files: List[str], output_file: str, dpi: int = 300, 
-                         progress_var: Optional[tk.DoubleVar] = None, 
-                         progress_label: Optional[tk.Label] = None) -> None:
-    """转换图片为PDF，优化内存使用"""
+
+class ConversionCancelled(Exception):
+    """用户主动取消转换。"""
+
+
+def natural_sort_key(value: str) -> List[Tuple[int, object]]:
+    """生成支持数字片段的自然排序键。"""
+    return [
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", value)
+    ]
+
+
+def convert_images_to_pdf(
+    image_files: List[Path],
+    output_file: Path,
+    dpi: int = 300,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> Tuple[int, List[str]]:
+    """原子生成 PDF，返回成功页数和失败信息。"""
     if not image_files:
         raise ValueError("没有选择图片文件")
+    if not 72 <= dpi <= 600:
+        raise ValueError("DPI 应在 72-600 之间")
+    if canvas is None or ImageReader is None:
+        raise RuntimeError("缺少 reportlab，请先运行：pip install reportlab")
 
-    c = canvas.Canvas(output_file)
-    total_files = len(image_files)
-    
-    for i, img_path in enumerate(image_files, 1):
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    temp_handle = tempfile.NamedTemporaryFile(
+        suffix=".pdf", prefix=f".{output_file.stem}_", dir=output_file.parent, delete=False
+    )
+    temp_path = Path(temp_handle.name)
+    temp_handle.close()
+    pdf = canvas.Canvas(str(temp_path))
+    success_count = 0
+    errors: List[str] = []
+
+    try:
+        for index, image_path in enumerate(image_files, 1):
+            if cancel_event and cancel_event.is_set():
+                raise ConversionCancelled
+
+            try:
+                with Image.open(image_path) as source:
+                    source.seek(0)
+                    source.thumbnail((MAX_IMAGE_SIZE, MAX_IMAGE_SIZE), Image.Resampling.LANCZOS)
+                    with source.convert("RGB") as image:
+                        width, height = image.size
+                        if width <= 0 or height <= 0:
+                            raise ValueError("图片尺寸无效")
+                        pdf_width = width * 72.0 / dpi
+                        pdf_height = height * 72.0 / dpi
+                        pdf.setPageSize((pdf_width, pdf_height))
+                        pdf.drawImage(
+                            ImageReader(image),
+                            0,
+                            0,
+                            width=pdf_width,
+                            height=pdf_height,
+                        )
+                        pdf.showPage()
+                        success_count += 1
+            except (OSError, ValueError) as error:
+                errors.append(f"{image_path.name}：{error}")
+
+            if progress_callback:
+                progress_callback(index, len(image_files))
+
+        if success_count == 0:
+            raise RuntimeError("所有图片都处理失败，未生成 PDF")
+        pdf.save()
+        temp_path.replace(output_file)
+    except BaseException:
         try:
-            # 使用with语句确保图片正确关闭，释放内存
-            with Image.open(img_path) as img:
-                # 处理WebP等特殊格式
-                if img.format == 'WEBP' or img.mode in ('RGBA', 'LA'):
-                    img = img.convert('RGB')
-                
-                width, height = img.size
-                
-                # 限制最大尺寸，避免内存溢出
-                max_size = 4000  # 像素
-                if width > max_size or height > max_size:
-                    ratio = min(max_size/width, max_size/height)
-                    new_width = int(width * ratio)
-                    new_height = int(height * ratio)
-                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                    width, height = new_width, new_height
-                
-                # 计算PDF页面大小
-                pdf_w = width * 72.0 / dpi
-                pdf_h = height * 72.0 / dpi
-                c.setPageSize((pdf_w, pdf_h))
-                
-                # 添加图片到PDF
-                c.drawImage(ImageReader(img), 0, 0, width=pdf_w, height=pdf_h)
-                c.showPage()
+            # canvas 尚未正常保存时也应删除临时文件。
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
-        except Exception as e:
-            print(f"处理图片 {img_path} 时出错: {e}")
-            continue
+    return success_count, errors
 
-        # 更新进度
-        if progress_var:
-            progress_var.set(int(i / total_files * 100))
-        if progress_label:
-            progress_label.config(text=f"处理中: {i}/{total_files}")
-        root.update_idletasks()
 
-    c.save()
+class DraggableListbox(tk.Listbox):
+    def __init__(self, master, on_reorder: Callable[[], None], **kwargs) -> None:
+        super().__init__(master, **kwargs)
+        self.current_index: Optional[int] = None
+        self.on_reorder = on_reorder
+        self.bind("<Button-1>", self._set_current)
+        self.bind("<B1-Motion>", self._shift_selection)
 
-def select_input_folder():
-    folder = filedialog.askdirectory(title="选择包含图片的文件夹")
-    if folder:
-        input_entry.delete(0, tk.END)
-        input_entry.insert(0, folder)
-        update_file_list(folder)
+    def _set_current(self, event) -> None:
+        self.current_index = self.nearest(event.y)
 
-        # 设置默认输出文件路径
-        folder_name = Path(folder).name
-        default_output_file = Path(folder) / f"{folder_name}_merged.pdf"
-        output_entry.delete(0, tk.END)
-        output_entry.insert(0, str(default_output_file))
-
-def update_file_list(folder: str) -> None:
-    """更新文件列表"""
-    try:
-        supported_formats = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff', '.gif')
-        folder_path = Path(folder)
-        
-        if not folder_path.exists():
-            messagebox.showerror("错误", "文件夹不存在")
+    def _shift_selection(self, event) -> None:
+        if self.current_index is None or self.size() < 2:
             return
-            
-        image_files = [f.name for f in folder_path.iterdir() 
-                      if f.is_file() and f.suffix.lower() in supported_formats]
-        
-        # 自然排序
-        image_files.sort(key=lambda x: [int(c) if c.isdigit() else c for c in x.split()])
-        
-        file_listbox.delete(0, tk.END)
-        for file in image_files:
-            file_listbox.insert(tk.END, file)
-        
-        # 更新状态标签
-        status_label.config(text=f"找到 {len(image_files)} 个图片文件", fg="blue")
-        
-    except Exception as e:
-        messagebox.showerror("错误", f"读取文件夹失败: {e}")
-
-def select_output_file():
-    file = filedialog.asksaveasfilename(defaultextension=".pdf", 
-                                        title="保存PDF文件", 
-                                        filetypes=[("PDF files", "*.pdf")])
-    if file:
-        output_entry.delete(0, tk.END)
-        output_entry.insert(0, file)
-
-def remove_selected_files():
-    """移除选中的文件"""
-    selected_indices = file_listbox.curselection()
-    for i in reversed(selected_indices):
-        file_listbox.delete(i)
-    update_status()
-
-def move_file_up():
-    """向上移动选中的文件"""
-    selected = file_listbox.curselection()
-    if selected and selected[0] > 0:
-        idx = selected[0]
-        item = file_listbox.get(idx)
-        file_listbox.delete(idx)
-        file_listbox.insert(idx - 1, item)
-        file_listbox.selection_set(idx - 1)
-
-def move_file_down():
-    """向下移动选中的文件"""
-    selected = file_listbox.curselection()
-    if selected and selected[0] < file_listbox.size() - 1:
-        idx = selected[0]
-        item = file_listbox.get(idx)
-        file_listbox.delete(idx)
-        file_listbox.insert(idx + 1, item)
-        file_listbox.selection_set(idx + 1)
-
-def update_status():
-    """更新状态信息"""
-    count = file_listbox.size()
-    status_label.config(text=f"待转换: {count} 个文件", fg="green" if count > 0 else "gray")
-
-def convert_in_thread():
-    """在新线程中执行转换"""
-    input_folder = input_entry.get().strip()
-    output_file = output_entry.get().strip()
-    
-    try:
-        dpi = int(dpi_entry.get())
-        if dpi < 72 or dpi > 600:
-            raise ValueError("DPI应在72-600之间")
-    except ValueError as e:
-        messagebox.showerror("参数错误", f"DPI设置无效: {e}")
-        return
-
-    if not input_folder or not output_file:
-        messagebox.showerror("错误", "请选择输入文件夹和输出文件")
-        return
-
-    if not Path(input_folder).exists():
-        messagebox.showerror("错误", "输入文件夹不存在")
-        return
-        
-    if file_listbox.size() == 0:
-        messagebox.showerror("错误", "没有图片文件可转换")
-        return
-
-    try:
-        progress_var.set(0)
-        progress_label.config(text="准备中...")
-        convert_button.config(state=tk.DISABLED, text="转换中...")
-        cancel_button.config(state=tk.NORMAL)
-        root.update_idletasks()
-
-        # 构建完整的文件路径列表
-        image_files = [os.path.join(input_folder, file_listbox.get(i)) 
-                      for i in range(file_listbox.size())]
-        
-        # 验证所有文件是否存在
-        missing_files = [f for f in image_files if not Path(f).exists()]
-        if missing_files:
-            messagebox.showerror("错误", f"以下文件不存在:\n" + "\n".join(missing_files[:5]))
+        new_index = self.nearest(event.y)
+        if new_index == self.current_index:
             return
-        
-        convert_images_to_pdf(image_files, output_file, dpi, progress_var, progress_label)
+        item = self.get(self.current_index)
+        self.delete(self.current_index)
+        self.insert(new_index, item)
+        self.selection_clear(0, tk.END)
+        self.selection_set(new_index)
+        self.current_index = new_index
+        self.on_reorder()
 
-        progress_label.config(text="转换完成！")
-        messagebox.showinfo("成功", f"PDF文件已成功生成:\n{output_file}")
-        
-    except Exception as e:
-        progress_label.config(text="转换失败")
-        messagebox.showerror("错误", f"转换过程中发生错误:\n{str(e)}")
-    finally:
-        convert_button.config(state=tk.NORMAL, text="开始转换")
-        cancel_button.config(state=tk.DISABLED)
 
-def convert():
-    """开始转换（在新线程中）"""
-    global conversion_thread
-    conversion_thread = threading.Thread(target=convert_in_thread, daemon=True)
-    conversion_thread.start()
+class ImageToPdfApp:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.root.title("图片到 PDF 转换器 v3.0")
+        self.root.geometry("820x660")
+        self.root.minsize(700, 560)
+        self.input_folder: Optional[Path] = None
+        self.files: List[Path] = []
+        self.cancel_event = threading.Event()
+        self.progress_var = tk.IntVar()
+        self._build_ui()
 
-def cancel_conversion():
-    """取消转换"""
-    # 这里可以添加取消逻辑，但由于reportlab转换是同步的，实际上很难中途取消
-    messagebox.showinfo("提示", "转换正在进行中，请等待完成")
+    def _build_ui(self) -> None:
+        main_frame = tk.Frame(self.root, padx=10, pady=10)
+        main_frame.pack(fill=tk.BOTH, expand=True)
 
-# 创建主窗口
-root = tk.Tk()
-root.title("图片到PDF转换器 v2.0")
-root.geometry("800x650")
-root.resizable(True, True)
+        input_frame = tk.Frame(main_frame)
+        input_frame.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(input_frame, text="图片文件夹:", width=12, anchor="w").pack(side=tk.LEFT)
+        self.input_entry = tk.Entry(input_frame)
+        self.input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.input_button = tk.Button(input_frame, text="浏览", command=self.select_input_folder)
+        self.input_button.pack(side=tk.RIGHT)
 
-# 创建主框架
-main_frame = tk.Frame(root, padx=10, pady=10)
-main_frame.pack(fill=tk.BOTH, expand=True)
+        list_frame = tk.Frame(main_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        list_left = tk.Frame(list_frame)
+        list_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        tk.Label(list_left, text="图片列表（双击预览，拖动排序）:").pack(anchor="w")
+        self.file_listbox = DraggableListbox(
+            list_left, self._sync_files_from_listbox, selectmode=tk.SINGLE, height=12
+        )
+        self.file_listbox.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+        self.file_listbox.bind("<Double-Button-1>", self.preview_selected)
 
-# 输入文件夹选择
-input_frame = tk.Frame(main_frame)
-input_frame.pack(fill=tk.X, pady=(0, 10))
-tk.Label(input_frame, text="图片文件夹:", width=12, anchor="w").pack(side=tk.LEFT)
-input_entry = tk.Entry(input_frame)
-input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 5))
-tk.Button(input_frame, text="浏览", command=select_input_folder, width=8).pack(side=tk.RIGHT)
+        button_frame = tk.Frame(list_frame, width=110)
+        button_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+        button_frame.pack_propagate(False)
+        self.up_button = tk.Button(button_frame, text="↑ 上移", command=lambda: self.move_file(-1))
+        self.up_button.pack(fill=tk.X, pady=2)
+        self.down_button = tk.Button(button_frame, text="↓ 下移", command=lambda: self.move_file(1))
+        self.down_button.pack(fill=tk.X, pady=2)
+        self.remove_button = tk.Button(button_frame, text="移除选中", command=self.remove_selected)
+        self.remove_button.pack(fill=tk.X, pady=2)
 
-# 文件列表和控制按钮
-list_frame = tk.Frame(main_frame)
-list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        output_frame = tk.Frame(main_frame)
+        output_frame.pack(fill=tk.X, pady=(0, 10))
+        output_row = tk.Frame(output_frame)
+        output_row.pack(fill=tk.X)
+        tk.Label(output_row, text="输出 PDF:", width=12, anchor="w").pack(side=tk.LEFT)
+        self.output_entry = tk.Entry(output_row)
+        self.output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.output_button = tk.Button(output_row, text="浏览", command=self.select_output_file)
+        self.output_button.pack(side=tk.RIGHT)
 
-# 左侧：文件列表
-list_left = tk.Frame(list_frame)
-list_left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        dpi_row = tk.Frame(output_frame)
+        dpi_row.pack(fill=tk.X, pady=(5, 0))
+        tk.Label(dpi_row, text="图片质量 DPI:", width=12, anchor="w").pack(side=tk.LEFT)
+        self.dpi_entry = tk.Entry(dpi_row, width=10)
+        self.dpi_entry.insert(0, "300")
+        self.dpi_entry.pack(side=tk.LEFT, padx=5)
+        tk.Label(dpi_row, text="72-600，推荐 300", fg="gray").pack(side=tk.LEFT)
 
-tk.Label(list_left, text="图片文件列表（双击预览，拖拽排序）:").pack(anchor="w")
-file_listbox = DraggableListbox(list_left, selectmode=tk.SINGLE, height=12)
-file_listbox.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+        control_frame = tk.Frame(main_frame)
+        control_frame.pack(fill=tk.X, pady=(0, 10))
+        self.convert_button = tk.Button(
+            control_frame,
+            text="开始转换",
+            command=self.start_conversion,
+            bg="#4CAF50",
+            fg="white",
+            height=2,
+        )
+        self.convert_button.pack(side=tk.LEFT, padx=(0, 10))
+        self.cancel_button = tk.Button(
+            control_frame,
+            text="取消转换",
+            command=self.cancel_conversion,
+            state="disabled",
+        )
+        self.cancel_button.pack(side=tk.LEFT)
 
-# 右侧：控制按钮
-button_frame = tk.Frame(list_frame, width=100)
-button_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
-button_frame.pack_propagate(False)
+        ttk.Progressbar(main_frame, variable=self.progress_var, maximum=100).pack(fill=tk.X)
+        self.progress_label = tk.Label(main_frame, text="准备就绪")
+        self.progress_label.pack(pady=(5, 0))
+        self.status_label = tk.Label(main_frame, text="请选择图片文件夹", fg="gray")
+        self.status_label.pack()
 
-tk.Button(button_frame, text="↑ 上移", command=move_file_up, width=12).pack(pady=2)
-tk.Button(button_frame, text="↓ 下移", command=move_file_down, width=12).pack(pady=2)
-tk.Button(button_frame, text="移除选中", command=remove_selected_files, width=12).pack(pady=2)
+    def select_input_folder(self) -> None:
+        folder = filedialog.askdirectory(title="选择包含图片的文件夹")
+        if not folder:
+            return
+        self.input_folder = Path(folder)
+        self._set_entry(self.input_entry, folder)
+        self.files = sorted(
+            (
+                path
+                for path in self.input_folder.iterdir()
+                if path.is_file() and path.suffix.lower() in SUPPORTED_FORMATS
+            ),
+            key=lambda path: natural_sort_key(path.name),
+        )
+        self._refresh_list()
+        self._set_entry(
+            self.output_entry,
+            str(self.input_folder / f"{self.input_folder.name}_merged.pdf"),
+        )
 
-# 输出文件和设置
-output_frame = tk.Frame(main_frame)
-output_frame.pack(fill=tk.X, pady=(0, 10))
+    def select_output_file(self) -> None:
+        output = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            title="保存 PDF 文件",
+            filetypes=[("PDF 文件", "*.pdf")],
+        )
+        if output:
+            self._set_entry(self.output_entry, output)
 
-# 输出文件选择
-output_row1 = tk.Frame(output_frame)
-output_row1.pack(fill=tk.X)
-tk.Label(output_row1, text="输出PDF文件:", width=12, anchor="w").pack(side=tk.LEFT)
-output_entry = tk.Entry(output_row1)
-output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 5))
-tk.Button(output_row1, text="浏览", command=select_output_file, width=8).pack(side=tk.RIGHT)
+    @staticmethod
+    def _set_entry(entry: tk.Entry, value: str) -> None:
+        entry.delete(0, tk.END)
+        entry.insert(0, value)
 
-# DPI设置
-output_row2 = tk.Frame(output_frame)
-output_row2.pack(fill=tk.X, pady=(5, 0))
-tk.Label(output_row2, text="图片质量(DPI):", width=12, anchor="w").pack(side=tk.LEFT)
-dpi_entry = tk.Entry(output_row2, width=10)
-dpi_entry.insert(0, "300")
-dpi_entry.pack(side=tk.LEFT, padx=(5, 10))
-tk.Label(output_row2, text="(72-600, 推荐300)", fg="gray").pack(side=tk.LEFT)
+    def _refresh_list(self) -> None:
+        self.file_listbox.delete(0, tk.END)
+        for path in self.files:
+            self.file_listbox.insert(tk.END, path.name)
+        count = len(self.files)
+        self.status_label.config(
+            text=f"待转换: {count} 个文件", fg="green" if count else "gray"
+        )
 
-# 控制按钮
-control_frame = tk.Frame(main_frame)
-control_frame.pack(fill=tk.X, pady=(0, 10))
+    def _sync_files_from_listbox(self) -> None:
+        if not self.input_folder:
+            return
+        self.files = [
+            self.input_folder / self.file_listbox.get(index)
+            for index in range(self.file_listbox.size())
+        ]
 
-convert_button = tk.Button(control_frame, text="开始转换", command=convert, 
-                          bg="#4CAF50", fg="white", font=("Arial", 10, "bold"), height=2)
-convert_button.pack(side=tk.LEFT, padx=(0, 10))
+    def remove_selected(self) -> None:
+        selection = self.file_listbox.curselection()
+        if selection:
+            del self.files[selection[0]]
+            self._refresh_list()
 
-cancel_button = tk.Button(control_frame, text="取消转换", command=cancel_conversion,
-                         bg="#f44336", fg="white", state="disabled")
-cancel_button.pack(side=tk.LEFT)
+    def move_file(self, offset: int) -> None:
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+        current = selection[0]
+        target = current + offset
+        if not 0 <= target < len(self.files):
+            return
+        self.files[current], self.files[target] = self.files[target], self.files[current]
+        self._refresh_list()
+        self.file_listbox.selection_set(target)
 
-# 进度条和状态
-progress_frame = tk.Frame(main_frame)
-progress_frame.pack(fill=tk.X)
+    def preview_selected(self, _event=None) -> None:
+        selection = self.file_listbox.curselection()
+        if not selection:
+            return
+        image_path = self.files[selection[0]]
+        try:
+            with Image.open(image_path) as image:
+                image.thumbnail((700, 650), Image.Resampling.LANCZOS)
+                preview = image.convert("RGB")
+                preview_photo = ImageTk.PhotoImage(preview)
+                preview.close()
+        except OSError as error:
+            messagebox.showerror("预览错误", f"无法预览图片：{error}")
+            return
 
-progress_var = tk.IntVar()
-progress_bar = ttk.Progressbar(progress_frame, variable=progress_var, maximum=100)
-progress_bar.pack(fill=tk.X, pady=(0, 5))
+        window = tk.Toplevel(self.root)
+        window.title(f"预览 - {image_path.name}")
+        label = tk.Label(window, image=preview_photo)
+        label.image = preview_photo
+        label.pack(expand=True)
 
-progress_label = tk.Label(progress_frame, text="准备中...")
-status_label = tk.Label(progress_frame, text="请选择图片文件夹开始", fg="gray")
-progress_label.pack()
-status_label.pack()
+    def start_conversion(self) -> None:
+        output_text = self.output_entry.get().strip()
+        if not self.files or not output_text:
+            messagebox.showerror("错误", "请选择图片文件夹和输出 PDF。")
+            return
+        missing = [path.name for path in self.files if not path.is_file()]
+        if missing:
+            messagebox.showerror("文件不存在", "\n".join(missing[:8]))
+            return
+        try:
+            dpi = int(self.dpi_entry.get())
+            if not 72 <= dpi <= 600:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("参数错误", "DPI 必须是 72-600 之间的整数。")
+            return
 
-# 全局变量
-conversion_thread = None
+        output = Path(output_text)
+        if output.exists() and not messagebox.askyesno("确认覆盖", "输出 PDF 已存在，是否覆盖？"):
+            return
 
-# 绑定文件列表选择事件
-file_listbox.bind('<<ListboxSelect>>', lambda e: update_status())
+        self.cancel_event.clear()
+        self._set_busy(True)
+        threading.Thread(
+            target=self._convert_worker,
+            args=(list(self.files), output, dpi),
+            daemon=True,
+        ).start()
 
-root.mainloop()
+    def _convert_worker(self, files: List[Path], output: Path, dpi: int) -> None:
+        try:
+            success, errors = convert_images_to_pdf(
+                files,
+                output,
+                dpi,
+                progress_callback=lambda current, total: self.root.after(
+                    0, self._update_progress, current, total
+                ),
+                cancel_event=self.cancel_event,
+            )
+        except ConversionCancelled:
+            self.root.after(0, self._conversion_finished, output, 0, [], True, None)
+        except (OSError, ValueError, RuntimeError) as error:
+            self.root.after(0, self._conversion_finished, output, 0, [], False, str(error))
+        else:
+            self.root.after(0, self._conversion_finished, output, success, errors, False, None)
+
+    def _update_progress(self, current: int, total: int) -> None:
+        self.progress_var.set(current / total * 100)
+        self.progress_label.config(text=f"处理中: {current}/{total}")
+
+    def _conversion_finished(
+        self,
+        output: Path,
+        success: int,
+        errors: List[str],
+        cancelled: bool,
+        fatal_error: Optional[str],
+    ) -> None:
+        self._set_busy(False)
+        if cancelled:
+            self.progress_label.config(text="转换已取消")
+        elif fatal_error:
+            self.progress_label.config(text="转换失败")
+            messagebox.showerror("转换失败", fatal_error)
+        elif errors:
+            self.progress_label.config(text=f"完成：成功 {success} 页，失败 {len(errors)} 张")
+            messagebox.showwarning(
+                "转换完成",
+                f"PDF 已生成：\n{output}\n\n以下图片失败：\n" + "\n".join(errors[:8]),
+            )
+        else:
+            self.progress_var.set(100)
+            self.progress_label.config(text=f"转换完成，共 {success} 页")
+            messagebox.showinfo("成功", f"PDF 已生成：\n{output}")
+
+    def _set_busy(self, busy: bool) -> None:
+        state = tk.DISABLED if busy else tk.NORMAL
+        for button in (
+            self.input_button,
+            self.output_button,
+            self.up_button,
+            self.down_button,
+            self.remove_button,
+            self.convert_button,
+        ):
+            button.config(state=state)
+        self.cancel_button.config(state=tk.NORMAL if busy else tk.DISABLED)
+        if busy:
+            self.progress_var.set(0)
+            self.progress_label.config(text="准备中...")
+
+    def cancel_conversion(self) -> None:
+        self.cancel_event.set()
+        self.progress_label.config(text="正在取消...")
+
+
+def main() -> None:
+    root = tk.Tk()
+    if canvas is None or ImageReader is None:
+        root.withdraw()
+        messagebox.showerror("缺少依赖", "缺少 reportlab，请先运行：pip install reportlab")
+        root.destroy()
+        return
+    ImageToPdfApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

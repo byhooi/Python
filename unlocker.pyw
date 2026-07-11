@@ -1,85 +1,96 @@
+"""PDF 权限移除工具，支持文件选择和拖放。"""
+
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox
-from tkinterdnd2 import DND_FILES, TkinterDnD  # 引入拖拽库
+from typing import Iterable
+
 import pikepdf
-import os
 
-def process_file(file_path):
-    """
-    核心处理逻辑：接收一个文件路径，执行解锁
-    """
-    # 【关键】Windows拖拽带空格的路径时，可能会被包裹在 {} 中，需要去除
-    if file_path.startswith('{') and file_path.endswith('}'):
-        file_path = file_path[1:-1]
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
 
-    # 简单的格式校验
-    if not file_path.lower().endswith('.pdf'):
-        messagebox.showwarning("格式错误", "请拖入 PDF 文件！")
-        return
 
-    if not os.path.exists(file_path):
-        messagebox.showerror("错误", "文件路径不存在或无法读取。")
-        return
+def unlock_pdf(file_path: Path) -> Path:
+    """移除 PDF 权限限制，并返回输出路径。"""
+    source = file_path.expanduser().resolve()
+    if source.suffix.lower() != ".pdf":
+        raise ValueError("请选择 PDF 文件")
+    if not source.is_file():
+        raise FileNotFoundError(f"文件不存在或无法读取：{source}")
 
-    try:
-        # 打开 PDF
-        pdf = pikepdf.open(file_path)
-        
-        # 准备保存路径
-        dir_name = os.path.dirname(file_path)
-        base_name = os.path.basename(file_path)
-        name_without_ext = os.path.splitext(base_name)[0]
-        new_filename = f"{name_without_ext}_unlocked.pdf"
-        save_path = os.path.join(dir_name, new_filename)
+    output = source.with_name(f"{source.stem}_unlocked.pdf")
+    with pikepdf.open(source) as pdf:
+        pdf.save(output)
+    return output
 
-        # 保存并移除权限
-        pdf.save(save_path)
-        
-        messagebox.showinfo("成功", f"解锁成功！\n文件已保存为：\n{new_filename}")
 
-    except pikepdf.PasswordError:
-        messagebox.showerror("失败", "这个文件有“打开密码”，无法直接破解。\n你需要先知道密码才能移除权限。")
-    except Exception as e:
-        messagebox.showerror("错误", f"发生未知错误：\n{str(e)}")
+class PdfUnlockerApp:
+    def __init__(self, root: tk.Tk, dnd_available: bool) -> None:
+        self.root = root
+        self.root.title("PDF 权限移除工具")
+        self.root.geometry("440x230")
+        self.root.resizable(False, False)
 
-def select_file():
-    """按钮点击事件"""
-    file_path = filedialog.askopenfilename(
-        title="选择被限制的 PDF 文件",
-        filetypes=[("PDF Files", "*.pdf")]
-    )
-    if file_path:
-        process_file(file_path)
+        frame = tk.Frame(root)
+        frame.pack(expand=True, fill="both", padx=20, pady=20)
 
-def on_drop(event):
-    """拖拽释放事件"""
-    # event.data 就是拖进来的文件路径
-    file_path = event.data
-    process_file(file_path)
+        tk.Label(frame, text="PDF", font=("Arial", 30, "bold")).pack()
+        hint = "将 PDF 文件拖放到这里\n或者" if dnd_available else "请选择需要移除权限的 PDF 文件"
+        self.hint_label = tk.Label(frame, text=hint, font=("Microsoft YaHei", 11))
+        self.hint_label.pack(pady=10)
+        tk.Button(frame, text="点击选择文件", command=self.select_file, padx=20, pady=5).pack()
 
-# --- 主程序 ---
+        if dnd_available:
+            root.drop_target_register(DND_FILES)
+            root.dnd_bind("<<Drop>>", self.on_drop)
 
-# 注意：这里使用 TkinterDnD.Tk() 而不是标准的 tk.Tk()
-root = TkinterDnD.Tk()
-root.title("PDF 权限移除工具 (支持拖拽)")
-root.geometry("400x200")
+    def process_files(self, paths: Iterable[str]) -> None:
+        errors = []
+        outputs = []
+        for raw_path in paths:
+            path = Path(raw_path)
+            try:
+                output = path.resolve().with_name(f"{path.stem}_unlocked.pdf")
+                if output.exists() and not messagebox.askyesno(
+                    "确认覆盖", f"文件已存在，是否覆盖？\n{output.name}"
+                ):
+                    continue
+                outputs.append(unlock_pdf(path))
+            except pikepdf.PasswordError:
+                errors.append(f"{path.name}：存在打开密码，需要先提供密码")
+            except (OSError, ValueError) as error:
+                errors.append(f"{path.name}：{error}")
 
-# 注册窗口以接受文件拖拽
-root.drop_target_register(DND_FILES)
-# 绑定“释放”事件到 on_drop 函数
-root.dnd_bind('<<Drop>>', on_drop)
+        if outputs:
+            names = "\n".join(path.name for path in outputs)
+            messagebox.showinfo("完成", f"已处理 {len(outputs)} 个文件：\n{names}")
+        if errors:
+            messagebox.showerror("部分文件处理失败", "\n".join(errors))
 
-# UI 布局
-frame = tk.Frame(root)
-frame.pack(expand=True, fill='both', padx=20, pady=20)
+    def select_file(self) -> None:
+        paths = filedialog.askopenfilenames(
+            title="选择被限制的 PDF 文件", filetypes=[("PDF 文件", "*.pdf")]
+        )
+        if paths:
+            self.process_files(paths)
 
-label_icon = tk.Label(frame, text="📂", font=("Arial", 40))
-label_icon.pack()
+    def on_drop(self, event) -> None:
+        paths = self.root.tk.splitlist(event.data)
+        self.process_files(paths)
 
-label_text = tk.Label(frame, text="将 PDF 文件拖拽到这里\n或者", font=("微软雅黑", 12))
-label_text.pack(pady=10)
 
-btn = tk.Button(frame, text="点击选择文件", command=select_file, padx=20, pady=5, bg="#4CAF50", fg="black") # Windows FG可能不生效
-btn.pack()
+def main() -> None:
+    dnd_available = TkinterDnD is not None
+    root = TkinterDnD.Tk() if dnd_available else tk.Tk()
+    PdfUnlockerApp(root, dnd_available)
+    if not dnd_available:
+        messagebox.showwarning("拖放不可用", "未安装 tkinterdnd2，仍可通过按钮选择文件。")
+    root.mainloop()
 
-root.mainloop()
+
+if __name__ == "__main__":
+    main()

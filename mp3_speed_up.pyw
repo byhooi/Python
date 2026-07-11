@@ -3,13 +3,27 @@ MP3 播放速度调整工具（GUI 版 + 拖放支持）
 使用 ffmpeg 的 atempo 滤镜实现变速不变调
 """
 
+import shutil
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
+
+
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def available_output_path(source: Path) -> Path:
+    """生成不会覆盖已有文件的输出路径。"""
+    candidate = source.with_name(f"{source.stem}_fast{source.suffix}")
+    index = 2
+    while candidate.exists():
+        candidate = source.with_name(f"{source.stem}_fast_{index}{source.suffix}")
+        index += 1
+    return candidate
 
 
 class Mp3SpeedApp:
@@ -151,23 +165,8 @@ class Mp3SpeedApp:
     # ── 拖放事件 ──
 
     def _parse_drop_data(self, data: str) -> list[str]:
-        """解析拖放数据，处理带花括号的路径（含空格时 tkdnd 会加花括号）"""
-        paths = []
-        i = 0
-        while i < len(data):
-            if data[i] == "{":
-                end = data.index("}", i)
-                paths.append(data[i + 1 : end])
-                i = end + 2  # 跳过 } 和空格
-            elif data[i] == " ":
-                i += 1
-            else:
-                end = data.find(" ", i)
-                if end == -1:
-                    end = len(data)
-                paths.append(data[i:end])
-                i = end + 1
-        return paths
+        """使用 Tcl 自带解析器正确处理空格、花括号等路径字符。"""
+        return list(self.root.tk.splitlist(data))
 
     def _on_drop(self, event):
         """处理拖放文件"""
@@ -247,17 +246,28 @@ class Mp3SpeedApp:
         if not self.files:
             self.status_label.config(text="⚠️ 请先选择或拖入文件", foreground="#f38ba8")
             return
-        self.start_btn.config(state="disabled")
-        threading.Thread(target=self._process_files, daemon=True).start()
+        if shutil.which("ffmpeg") is None:
+            messagebox.showerror("未找到 FFmpeg", "请安装 FFmpeg 并将其加入 PATH。")
+            return
 
-    def _process_files(self):
+        files = tuple(self.files)
         speed = round(self.speed_var.get(), 2)
-        total = len(self.files)
-        success = 0
+        self.start_btn.config(state="disabled")
+        threading.Thread(
+            target=self._process_files, args=(files, speed), daemon=True
+        ).start()
 
-        for i, mp3 in enumerate(self.files, 1):
+    def _process_files(self, files: tuple[Path, ...], speed: float):
+        total = len(files)
+        success = 0
+        errors = []
+
+        for i, mp3 in enumerate(files, 1):
             self._update_status(f"⏳ [{i}/{total}] 处理中: {mp3.name}")
-            output = mp3.with_name(f"{mp3.stem}_fast{mp3.suffix}")
+            if not mp3.is_file():
+                errors.append(f"{mp3.name}：文件不存在")
+                continue
+            output = available_output_path(mp3)
 
             cmd = [
                 "ffmpeg", "-y",
@@ -267,17 +277,35 @@ class Mp3SpeedApp:
                 str(output),
             ]
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    creationflags=CREATE_NO_WINDOW,
+                )
                 if result.returncode == 0:
                     success += 1
                 else:
-                    self._update_status(f"❌ 失败: {mp3.name}")
+                    detail = result.stderr.strip().splitlines()
+                    errors.append(f"{mp3.name}：{detail[-1] if detail else '转换失败'}")
             except FileNotFoundError:
-                self._update_status("❌ 未找到 ffmpeg，请先安装并添加到 PATH")
+                errors.append("未找到 FFmpeg")
                 break
 
-        self._update_status(f"✅ 完成！成功 {success}/{total} 个文件")
-        self.root.after(0, lambda: self.start_btn.config(state="normal"))
+        self.root.after(0, self._processing_finished, success, total, errors)
+
+    def _processing_finished(self, success: int, total: int, errors: list[str]):
+        self.start_btn.config(state="normal")
+        self.status_label.config(
+            text=f"完成：成功 {success}/{total} 个文件", foreground="#a6adc8"
+        )
+        if errors:
+            messagebox.showwarning(
+                "处理完成",
+                f"成功 {success}/{total} 个文件。\n\n失败详情：\n" + "\n".join(errors[:8]),
+            )
 
     def _update_status(self, text: str):
         self.root.after(0, lambda: self.status_label.config(text=text, foreground="#a6adc8"))

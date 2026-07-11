@@ -1,0 +1,16 @@
+# PDF 工具
+Pillow
+pikepdf
+reportlab
+
+# GUI 拖放
+tkinterdnd2
+
+# TTS 与音频处理
+edge-tts
+pydub
+python-dotenv
+requests
+
+# FinalShell 的 Keccak-384 算法
+pycryptodome
