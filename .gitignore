@@ -4,3 +4,7 @@
 # 敏感配置文件
 .env
 tts_config.py
+
+# 数字组合生成结果及历史排除列表
+easy_pins.txt
+easy_pins_history.txt
