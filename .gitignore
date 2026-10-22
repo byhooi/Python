@@ -8,3 +8,6 @@ tts_config.py
 # 数字组合生成结果及历史排除列表
 easy_pins.txt
 easy_pins_history.txt
+
+# 收藏夹检查工具的结果缓存
+收藏夹检查_cache.json
